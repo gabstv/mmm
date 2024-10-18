@@ -7,6 +7,14 @@ import (
 // Arena is an arena allocator.
 type Arena interface {
 	Allocator
+
+	// Reset resets the arena allocator.
+	// This is equivalent to freeing all the memory allocated by the arena.
+	//
+	// The caller must ensure that objects that were previously
+	// allocated by the arena are not used after calling this method.
+	Reset()
+
 	destroy()
 }
 
@@ -55,9 +63,8 @@ func (a *arenaAllocator) destroy() {
 	}
 }
 
-// TODO: remove this
-func (a *arenaAllocator) SetByte(index int, d byte) {
-	a.buf[index] = d
+func (a *arenaAllocator) Reset() {
+	a.cursor = 0
 }
 
 // NewArena returns a new arena allocator.

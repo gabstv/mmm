@@ -98,7 +98,7 @@ func BenchmarkArenaAlloc128KB(b *testing.B) {
 
 		if x == nil {
 			// out of memory, let's reset the arena for this benchmark
-			arena.(*arenaAllocator).cursor = 0
+			arena.Reset()
 			goto realloc
 		}
 
