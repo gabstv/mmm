@@ -72,3 +72,16 @@ func main() {
 	fmt.Printf("x: %d, y: %d, z: %t\n", *x, *y, *z)
 }
 ```
+
+Benchmarks:
+
+```
+# Allocating 128KB of memory:
+
+goos: linux
+goarch: amd64
+pkg: github.com/gabstv/mmm
+cpu: AMD Ryzen 5 4500 6-Core Processor              
+BenchmarkArenaAlloc128KB-12      	29451156	        38.42 ns/op	       0 B/op	       0 allocs/op # arena
+BenchmarkNoArenaAlloc128KB-12    	   70413	     28048 ns/op	  131072 B/op	       1 allocs/op # heap
+```
