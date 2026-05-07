@@ -2,8 +2,6 @@
 
 Provides allocators for managing memory in Go.
 
-WARNING: Experimental. Do not use in production!
-
 ## Allocators
 
 ### Arena
