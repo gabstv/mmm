@@ -4,6 +4,14 @@ import (
 	"unsafe"
 )
 
+// GeneralPurposeAllocator is a bucket-based allocator that supports
+// individual Free calls. Each bucket is a bump allocator; when all
+// allocations in a bucket are freed, the bucket is reclaimed.
+//
+// Memory within a partially-freed bucket is NOT reused — the cursor
+// only resets when the bucket's allocation count reaches zero. For
+// workloads that interleave alloc/free of different sizes, memory
+// will accumulate in buckets until they are fully emptied.
 type GeneralPurposeAllocator interface {
 	Allocator
 	Size() int64
@@ -15,6 +23,9 @@ type GeneralPurposeAllocator interface {
 type generalPurposeAllocator struct {
 	bucketSize int
 	buckets    []gpabucket
+	refs       []any
+	managed    map[int]any
+	nextPinID  int
 }
 
 type gpabucket struct {
@@ -29,15 +40,17 @@ type region struct {
 }
 
 func (b *gpabucket) canAlloc(size, align int) bool {
-	remainder := b.cursor % align
-	return b.cursor+size+remainder <= len(b.buf)
+	padding := (align - b.cursor%align) % align
+	return b.cursor+padding+size <= len(b.buf)
 }
 
 func (b *gpabucket) alloc(size, align int) unsafe.Pointer {
-	remainder := b.cursor % align
-	ptr := unsafe.Pointer(&b.buf[b.cursor+remainder])
-	b.cursor += size + remainder
+	padding := (align - b.cursor%align) % align
+	start := b.cursor + padding
+	ptr := unsafe.Pointer(&b.buf[start])
+	b.cursor = start + size
 	b.allocations++
+	clear(b.buf[start : start+size])
 	return ptr
 }
 
@@ -61,7 +74,6 @@ func (b *gpabucket) free(ptr unsafe.Pointer) (bucketEmptied bool) {
 }
 
 func (b *generalPurposeAllocator) canAlloc(size int, align int) bool {
-	// GPA can always allocate (if the OS doen't run out of memory)
 	return true
 }
 
@@ -74,21 +86,42 @@ func (a *generalPurposeAllocator) alloc(size, align int) unsafe.Pointer {
 	return bucket.alloc(size, align)
 }
 
+// Free releases an allocation from the GPA. When all allocations within
+// a bucket are freed, the bucket itself is reclaimed.
+//
+// Free does NOT release managed pins (PinManaged). Call PinHandle.Unpin()
+// separately to avoid keeping unnecessary GC references alive.
 func (a *generalPurposeAllocator) free(ptr unsafe.Pointer) error {
 	for i := range a.buckets {
 		if !a.buckets[i].hasPtr(ptr) {
 			continue
 		}
 
-		// this is the bucket
 		if a.buckets[i].free(ptr) {
-			// bucket is empty, remove it
 			a.buckets = append(a.buckets[:i], a.buckets[i+1:]...)
 		}
 		return nil
 	}
 
 	return ErrNotFound
+}
+
+func (a *generalPurposeAllocator) pin(value any) {
+	a.refs = append(a.refs, value)
+}
+
+func (a *generalPurposeAllocator) pinManaged(value any) int {
+	id := a.nextPinID
+	a.nextPinID++
+	if a.managed == nil {
+		a.managed = make(map[int]any)
+	}
+	a.managed[id] = value
+	return id
+}
+
+func (a *generalPurposeAllocator) unpin(id int) {
+	delete(a.managed, id)
 }
 
 func (a *generalPurposeAllocator) getBucket(freeSize, align int) *gpabucket {
@@ -133,29 +166,28 @@ func (a *generalPurposeAllocator) Size() int64 {
 	return total
 }
 
-// from https://go.dev/src/runtime/slice.go
-type slice struct {
-	array unsafe.Pointer
-	len   int
-	cap   int
-}
-
+// NewArena creates a sub-arena allocated from this GPA. The arena struct
+// and its buffer are laid out contiguously in a single GPA allocation.
+//
+// Pin/PinManaged calls on the returned arena are delegated to the parent
+// GPA, since the arena struct lives in GPA memory (invisible to the GC).
+// Managed pin handles remain valid after the arena is destroyed.
 func (a *generalPurposeAllocator) NewArena(size int) Arena {
 	sz1 := unsafe.Sizeof(arenaAllocator{})
-	sz2 := uintptr(size)
-	arenaRoot := a.alloc(int(sz1)+int(sz2), 8)
-	slc0 := (*slice)(arenaRoot)
-	slc0.cap = size
-	slc0.len = size
-	slc0.array = unsafe.Pointer(uintptr(arenaRoot) + sz1)
+	arenaRoot := a.alloc(int(sz1)+size, 8)
 
 	arena := (*arenaAllocator)(arenaRoot)
+	bufStart := unsafe.Add(arenaRoot, int(sz1))
+	arena.buf = unsafe.Slice((*byte)(bufStart), size)
 	arena.cursor = 0
 	arena.parent = a
 
 	return arena
 }
 
+// NewGeneralPurposeAllocator returns a new GPA with the given default
+// bucket size. Buckets larger than bucketSize are created automatically
+// when an allocation exceeds the default.
 func NewGeneralPurposeAllocator(bucketSize int) GeneralPurposeAllocator {
 	return &generalPurposeAllocator{
 		bucketSize: bucketSize,
