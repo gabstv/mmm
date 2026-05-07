@@ -123,11 +123,12 @@ func (b *gpabucket) alloc(size, align int) unsafe.Pointer {
 }
 
 func (b *gpabucket) hasPtr(ptr unsafe.Pointer) bool {
-	p00 := unsafe.Pointer(&b.buf[0])
-	p0 := uintptr(p00)
+	if len(b.buf) == 0 {
+		return false
+	}
+	p0 := uintptr(unsafe.Pointer(&b.buf[0]))
 	p := uintptr(ptr)
-	pos := int(p - p0)
-	return pos >= 0 && pos < len(b.buf)
+	return p >= p0 && p < p0+uintptr(len(b.buf))
 }
 
 func (b *gpabucket) free(ptr unsafe.Pointer) (bucketEmptied bool) {
@@ -267,8 +268,7 @@ func (a *generalPurposeAllocator) getBucket(freeSize, align int) *gpabucket {
 func (a *generalPurposeAllocator) makeBucket(minsize int) *gpabucket {
 	size := a.bucketSize
 	if minsize > size {
-		modulo := minsize % 8
-		size = minsize + modulo
+		size = (minsize + 7) &^ 7
 	}
 	b := gpabucket{
 		buf: make([]byte, size),

@@ -93,10 +93,7 @@ func (a *arenaAllocator) destroy() {
 	a.cursor = 0
 	a.refs = nil
 	a.managed = nil
-	if a.parent != nil {
-		a.parent.free(unsafe.Pointer(a))
-		a.parent = nil
-	}
+	a.parent = nil
 }
 
 func (a *arenaAllocator) Reset() {
@@ -131,6 +128,11 @@ func NewArenaFrom(buf []byte) Arena {
 // pointers go out of scope, which can cause memory leaks. Nil out
 // arena-derived pointers when they are no longer needed.
 func DestroyArena(arena *Arena) {
-	(*arena).destroy()
+	aa := (*arena).(*arenaAllocator)
+	parent := aa.parent
+	aa.destroy()
+	if parent != nil {
+		parent.free(unsafe.Pointer(aa))
+	}
 	*arena = nil
 }
