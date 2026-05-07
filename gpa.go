@@ -1,6 +1,8 @@
 package mmm
 
 import (
+	"slices"
+	"sort"
 	"unsafe"
 )
 
@@ -8,10 +10,10 @@ import (
 // individual Free calls. Each bucket is a bump allocator; when all
 // allocations in a bucket are freed, the bucket is reclaimed.
 //
-// Memory within a partially-freed bucket is NOT reused — the cursor
-// only resets when the bucket's allocation count reaches zero. For
-// workloads that interleave alloc/free of different sizes, memory
-// will accumulate in buckets until they are fully emptied.
+// Freed memory within a bucket is tracked in a free list and reused for
+// subsequent allocations. Adjacent free regions are coalesced on insert.
+// When the tail of the bump region is freed, the cursor moves back to
+// allow bump allocation of that space again.
 type GeneralPurposeAllocator interface {
 	Allocator
 	Size() int64
@@ -32,6 +34,8 @@ type gpabucket struct {
 	buf         []byte
 	cursor      int
 	allocations int
+	allocSizes  map[int]int // offset-in-buf → allocation size (lazily initialized)
+	freeRegions []region    // sorted by pos, coalesced on insert
 }
 
 type region struct {
@@ -40,16 +44,80 @@ type region struct {
 }
 
 func (b *gpabucket) canAlloc(size, align int) bool {
+	// Check bump space first
 	padding := (align - b.cursor%align) % align
-	return b.cursor+padding+size <= len(b.buf)
+	if b.cursor+padding+size <= len(b.buf) {
+		return true
+	}
+	// Check free list for a fitting region
+	for _, r := range b.freeRegions {
+		padding := (align - r.pos%align) % align
+		alignedStart := r.pos + padding
+		_ = alignedStart
+		if padding+size <= r.size {
+			return true
+		}
+	}
+	return false
+}
+
+// allocFromFreeList tries to satisfy an allocation from the free list.
+// Returns nil if no suitable region is found.
+func (b *gpabucket) allocFromFreeList(size, align int) unsafe.Pointer {
+	for i, r := range b.freeRegions {
+		padding := (align - r.pos%align) % align
+		alignedStart := r.pos + padding
+
+		if padding+size > r.size {
+			continue
+		}
+
+		// This region fits — remove it from the list
+		b.freeRegions = slices.Delete(b.freeRegions, i, i+1)
+
+		// Return the padding fragment before the allocation to the free list
+		// (only if it's large enough to avoid extreme fragmentation)
+		if padding >= 8 {
+			b.insertFreeRegion(region{pos: r.pos, size: padding})
+		}
+
+		// Return any leftover after the allocation to the free list
+		remaining := r.size - padding - size
+		if remaining >= 8 {
+			b.insertFreeRegion(region{pos: alignedStart + size, size: remaining})
+		}
+
+		// Record size, update counter, zero memory, return pointer
+		if b.allocSizes == nil {
+			b.allocSizes = make(map[int]int)
+		}
+		b.allocSizes[alignedStart] = size
+		b.allocations++
+		clear(b.buf[alignedStart : alignedStart+size])
+		return unsafe.Pointer(&b.buf[alignedStart])
+	}
+	return nil
 }
 
 func (b *gpabucket) alloc(size, align int) unsafe.Pointer {
+	// Try free list first
+	if ptr := b.allocFromFreeList(size, align); ptr != nil {
+		return ptr
+	}
+
+	// Fall back to bump allocation
 	padding := (align - b.cursor%align) % align
 	start := b.cursor + padding
 	ptr := unsafe.Pointer(&b.buf[start])
 	b.cursor = start + size
 	b.allocations++
+
+	// Record allocation size (lazily init map)
+	if b.allocSizes == nil {
+		b.allocSizes = make(map[int]int)
+	}
+	b.allocSizes[start] = size
+
 	clear(b.buf[start : start+size])
 	return ptr
 }
@@ -67,10 +135,72 @@ func (b *gpabucket) free(ptr unsafe.Pointer) (bucketEmptied bool) {
 
 	if b.allocations == 0 {
 		b.cursor = 0
+		b.allocSizes = nil
+		b.freeRegions = b.freeRegions[:0]
 		return true
 	}
 
+	// Compute offset into the buffer
+	offset := int(uintptr(ptr) - uintptr(unsafe.Pointer(&b.buf[0])))
+
+	// Look up size in allocSizes map
+	size, ok := b.allocSizes[offset]
+	if !ok {
+		// Shouldn't happen, fall back gracefully (no reclamation)
+		return false
+	}
+	delete(b.allocSizes, offset)
+
+	// Insert the freed region into the free list (with coalescing)
+	b.insertFreeRegion(region{pos: offset, size: size})
+
+	// Shrink cursor if the freed region(s) extend to the tail
+	b.reclaimTail()
+
 	return false
+}
+
+// insertFreeRegion inserts r into freeRegions (sorted by pos) and coalesces
+// adjacent regions.
+func (b *gpabucket) insertFreeRegion(r region) {
+	// Binary search for the insertion point
+	idx := sort.Search(len(b.freeRegions), func(i int) bool {
+		return b.freeRegions[i].pos >= r.pos
+	})
+
+	b.freeRegions = slices.Insert(b.freeRegions, idx, r)
+
+	// Coalesce with next region if adjacent
+	if idx+1 < len(b.freeRegions) {
+		next := b.freeRegions[idx+1]
+		if b.freeRegions[idx].pos+b.freeRegions[idx].size == next.pos {
+			b.freeRegions[idx].size += next.size
+			b.freeRegions = slices.Delete(b.freeRegions, idx+1, idx+2)
+		}
+	}
+
+	// Coalesce with previous region if adjacent
+	if idx > 0 {
+		prev := b.freeRegions[idx-1]
+		if prev.pos+prev.size == b.freeRegions[idx].pos {
+			b.freeRegions[idx-1].size += b.freeRegions[idx].size
+			b.freeRegions = slices.Delete(b.freeRegions, idx, idx+1)
+		}
+	}
+}
+
+// reclaimTail moves the cursor back if the last free region extends to it,
+// then recurses to handle the new tail.
+func (b *gpabucket) reclaimTail() {
+	if len(b.freeRegions) == 0 {
+		return
+	}
+	last := b.freeRegions[len(b.freeRegions)-1]
+	if last.pos+last.size == b.cursor {
+		b.cursor = last.pos
+		b.freeRegions = b.freeRegions[:len(b.freeRegions)-1]
+		b.reclaimTail()
+	}
 }
 
 func (b *generalPurposeAllocator) canAlloc(size int, align int) bool {
