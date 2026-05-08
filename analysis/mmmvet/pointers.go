@@ -1,6 +1,9 @@
 package mmmvet
 
-import "go/types"
+import (
+	"go/types"
+	"strings"
+)
 
 // containsPointers reports whether type t contains any GC-managed pointer.
 // It breaks cycles using the seen map.
@@ -19,6 +22,13 @@ func containsPointersRec(t types.Type, seen map[types.Type]bool) bool {
 	case *types.Basic:
 		return u.Info()&types.IsString != 0
 	case *types.Pointer:
+		if named, ok := u.Elem().(*types.Named); ok {
+			if pkg := named.Obj().Pkg(); pkg != nil {
+				if strings.HasPrefix(pkg.Path(), mmmPkgPath+"/") {
+					return false
+				}
+			}
+		}
 		return true
 	case *types.Slice:
 		return true

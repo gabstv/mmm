@@ -10,6 +10,6 @@ import (
 func TestMmmvet(t *testing.T) {
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, mmmvet.Analyzer,
-		"safe", "allocwarn", "assignwarn", "pinok",
+		"safe", "allocwarn", "assignwarn", "pinok", "arenaptrsafe",
 	)
 }
