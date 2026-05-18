@@ -13,6 +13,8 @@
 package mring
 
 import (
+	"encoding/json"
+	"errors"
 	"math/bits"
 	"unsafe"
 
@@ -201,6 +203,34 @@ func Set[T any](r Ring, i int, v T) {
 func Clear(r Ring) {
 	r.head = 0
 	r.len = 0
+}
+
+// MarshalJSON serializes the ring buffer as a JSON array in logical order
+// (oldest to newest).
+func MarshalJSON[T any](r Ring) ([]byte, error) {
+	elems := make([]T, r.len)
+	for i := range int(r.len) {
+		elems[i] = *Get[T](r, i)
+	}
+	return json.Marshal(elems)
+}
+
+// UnmarshalJSON deserializes a JSON array into the ring buffer.
+// Returns an error if the array length exceeds capacity.
+// The ring is cleared before elements are inserted.
+func UnmarshalJSON[T any](r Ring, data []byte) error {
+	var elems []T
+	if err := json.Unmarshal(data, &elems); err != nil {
+		return err
+	}
+	if len(elems) > int(r.cap) {
+		return errors.New("mring: JSON array exceeds Ring capacity")
+	}
+	Clear(r)
+	for _, v := range elems {
+		Push[T](r, v)
+	}
+	return nil
 }
 
 // Free releases the ring buffer's allocation from the allocator.

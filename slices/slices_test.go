@@ -1,6 +1,7 @@
 package mslices_test
 
 import (
+	"encoding/json"
 	"testing"
 	"unsafe"
 
@@ -369,5 +370,92 @@ func TestGetMutatesInPlace(t *testing.T) {
 	*ptr = 999
 	if *mslices.Get[int64](s, 1) != 999 {
 		t.Fatal("in-place mutation through Get didn't work")
+	}
+}
+
+func TestMarshalJSON(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	s := mslices.From[int32](arena, []int32{10, 20, 30})
+	got, err := mslices.MarshalJSON[int32](s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should match Go slice marshaling
+	goGot, _ := json.Marshal([]int32{10, 20, 30})
+	if string(got) != string(goGot) {
+		t.Fatalf("mslices marshal %s != Go slice marshal %s", got, goGot)
+	}
+}
+
+func TestUnmarshalJSON(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	s := mslices.New[int32](arena, 10)
+	if err := mslices.UnmarshalJSON[int32](s, []byte(`[1,2,3,4,5]`)); err != nil {
+		t.Fatal(err)
+	}
+	if mslices.Len(s) != 5 {
+		t.Fatalf("Len = %d, want 5", mslices.Len(s))
+	}
+	want := []int32{1, 2, 3, 4, 5}
+	for i, w := range want {
+		if *mslices.Get[int32](s, i) != w {
+			t.Fatalf("elem[%d] = %d, want %d", i, *mslices.Get[int32](s, i), w)
+		}
+	}
+}
+
+func TestUnmarshalJSONExceedsCapacity(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	s := mslices.New[int32](arena, 2)
+	err := mslices.UnmarshalJSON[int32](s, []byte(`[1,2,3]`))
+	if err == nil {
+		t.Fatal("expected error for array exceeding capacity")
+	}
+}
+
+func TestJSONRoundTrip(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	original := []float64{1.5, 2.7, 3.14}
+	s := mslices.From[float64](arena, original)
+
+	data, err := mslices.MarshalJSON[float64](s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s2 := mslices.New[float64](arena, 10)
+	if err := mslices.UnmarshalJSON[float64](s2, data); err != nil {
+		t.Fatal(err)
+	}
+	if mslices.Len(s2) != len(original) {
+		t.Fatalf("round trip len = %d, want %d", mslices.Len(s2), len(original))
+	}
+	for i, w := range original {
+		if *mslices.Get[float64](s2, i) != w {
+			t.Fatalf("round trip elem[%d] = %f, want %f", i, *mslices.Get[float64](s2, i), w)
+		}
+	}
+}
+
+func TestMarshalJSONEmpty(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	s := mslices.New[int32](arena, 10)
+	got, err := mslices.MarshalJSON[int32](s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "[]" {
+		t.Fatalf("empty marshal = %s, want []", got)
 	}
 }

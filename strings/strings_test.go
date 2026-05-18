@@ -1,6 +1,7 @@
 package mstrings_test
 
 import (
+	"encoding/json"
 	"testing"
 	"unsafe"
 
@@ -326,6 +327,186 @@ func TestAlignedCapEliminatesPadding(t *testing.T) {
 	if stride != stride2 {
 		t.Fatalf("inconsistent stride: %d vs %d (addresses: %x, %x, %x)",
 			stride, stride2, addr1, addr2, addr3)
+	}
+}
+
+func TestMarshalJSON(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	s := mstrings.From(arena, "hello world")
+	got, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"hello world"` {
+		t.Fatalf("Marshal = %s, want %q", got, `"hello world"`)
+	}
+
+	goGot, _ := json.Marshal("hello world")
+	if string(got) != string(goGot) {
+		t.Fatalf("mstrings marshal %s != Go string marshal %s", got, goGot)
+	}
+}
+
+func TestMarshalJSONEscaping(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	s := mstrings.From(arena, "line1\nline2\t\"quoted\"")
+	got, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goGot, _ := json.Marshal("line1\nline2\t\"quoted\"")
+	if string(got) != string(goGot) {
+		t.Fatalf("escaped marshal %s != Go string marshal %s", got, goGot)
+	}
+}
+
+func TestMarshalJSONNil(t *testing.T) {
+	var s mstrings.String
+	got, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "null" {
+		t.Fatalf("Marshal(nil) = %s, want null", got)
+	}
+}
+
+func TestUnmarshalJSON(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	s := mstrings.New(arena, 20)
+	if err := json.Unmarshal([]byte(`"hello world"`), s); err != nil {
+		t.Fatal(err)
+	}
+	if mstrings.GoString(s) != "hello world" {
+		t.Fatalf("after unmarshal: %q, want %q", mstrings.GoString(s), "hello world")
+	}
+}
+
+func TestUnmarshalJSONNull(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	s := mstrings.From(arena, "existing")
+	if err := json.Unmarshal([]byte("null"), s); err != nil {
+		t.Fatal(err)
+	}
+	if mstrings.Len(s) != 0 {
+		t.Fatalf("after null unmarshal: len=%d, want 0", mstrings.Len(s))
+	}
+	// Capacity should be preserved — buffer not lost
+	if mstrings.Cap(s) != 8 {
+		t.Fatalf("after null unmarshal: cap=%d, want 8", mstrings.Cap(s))
+	}
+}
+
+func TestUnmarshalJSONNullInStruct(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	type Player struct {
+		Name  mstrings.String `json:"name"`
+		Score int             `json:"score"`
+	}
+
+	// encoding/json nils pointer-typed struct fields on null — this is
+	// standard Go behavior and cannot be overridden. The arena still
+	// owns the memory; it is reclaimed when the arena is destroyed.
+	p := Player{Name: mstrings.From(arena, "Alice"), Score: 10}
+	if err := json.Unmarshal([]byte(`{"name":null,"score":99}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Name != nil {
+		t.Fatal("expected Name to be nil after null unmarshal")
+	}
+	if p.Score != 99 {
+		t.Fatalf("Score=%d, want 99", p.Score)
+	}
+}
+
+func TestUnmarshalJSONEscaped(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	s := mstrings.New(arena, 30)
+	if err := json.Unmarshal([]byte(`"line1\nline2\t\"quoted\""`), s); err != nil {
+		t.Fatal(err)
+	}
+	want := "line1\nline2\t\"quoted\""
+	if mstrings.GoString(s) != want {
+		t.Fatalf("after escaped unmarshal: %q, want %q", mstrings.GoString(s), want)
+	}
+}
+
+func TestUnmarshalJSONExceedsCapacity(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	s := mstrings.New(arena, 3)
+	err := json.Unmarshal([]byte(`"toolong"`), s)
+	if err == nil {
+		t.Fatal("expected error for string exceeding capacity")
+	}
+}
+
+func TestJSONRoundTrip(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	original := "round trip test"
+	s := mstrings.From(arena, original)
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s2 := mstrings.New(arena, 20)
+	if err := json.Unmarshal(data, s2); err != nil {
+		t.Fatal(err)
+	}
+	if !mstrings.Equal(s, s2) {
+		t.Fatalf("round trip: %q != %q", mstrings.GoString(s), mstrings.GoString(s2))
+	}
+}
+
+func TestJSONInStruct(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	type Player struct {
+		Name  mstrings.String `json:"name"`
+		Score int             `json:"score"`
+	}
+
+	p := Player{Name: mstrings.From(arena, "Alice"), Score: 42}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw["name"]) != `"Alice"` {
+		t.Fatalf("name field = %s, want %q", raw["name"], `"Alice"`)
+	}
+
+	p2 := Player{Name: mstrings.New(arena, 20)}
+	if err := json.Unmarshal(data, &p2); err != nil {
+		t.Fatal(err)
+	}
+	if mstrings.GoString(p2.Name) != "Alice" {
+		t.Fatalf("unmarshaled name = %q, want %q", mstrings.GoString(p2.Name), "Alice")
+	}
+	if p2.Score != 42 {
+		t.Fatalf("unmarshaled score = %d, want 42", p2.Score)
 	}
 }
 

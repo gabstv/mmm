@@ -61,6 +61,78 @@ for i := 0; i < 100; i++ {
 }
 ```
 
+## Arena-Allocated Data Types
+
+### Strings (`mstrings`)
+
+Arena-backed strings with null termination for C interop. Zero GC pressure.
+
+```go
+import mstrings "github.com/gabstv/mmm/strings"
+
+arena := mmm.NewArena(4096)
+defer mmm.DestroyArena(&arena)
+
+s := mstrings.From(arena, "hello world")
+fmt.Println(mstrings.GoString(s)) // "hello world"
+```
+
+Strings implement `encoding.TextMarshaler` and `encoding.TextUnmarshaler`, so they serialize as regular JSON strings — indistinguishable from Go's `string`:
+
+```go
+data, _ := json.Marshal(s)       // "hello world"
+json.Unmarshal(data, s)           // writes directly into arena
+```
+
+### Slices (`mslices`)
+
+Generic arena-allocated slices with fixed capacity.
+
+```go
+import mslices "github.com/gabstv/mmm/slices"
+
+s := mslices.From[float32](arena, []float32{1.0, 2.0, 3.0})
+mslices.Append[float32](s, 4.0)
+fmt.Println(mslices.GoSlice[float32](s)) // [1 2 3 4]
+```
+
+### Ring Buffers (`mring`)
+
+Fixed-capacity ring buffers for bounded history (input combos, position trails, event logs).
+
+```go
+import mring "github.com/gabstv/mmm/ring"
+
+r := mring.New[int](arena, 4)
+for i := range 6 {
+    mring.Push[int](r, i) // overwrites oldest when full
+}
+// r contains [2, 3, 4, 5]
+```
+
+### JSON for Slices and Ring Buffers
+
+Slices and ring buffers are generic types, so they can't implement `json.Marshaler` directly (the header erases the type parameter). Instead, the packages provide generic helper functions:
+
+```go
+data, err := mslices.MarshalJSON[float32](s)
+err = mslices.UnmarshalJSON[float32](s, data)
+
+data, err = mring.MarshalJSON[int](r)
+err = mring.UnmarshalJSON[int](r, data)
+```
+
+To get automatic `json.Marshal`/`json.Unmarshal` support, define a named type that delegates to the helpers:
+
+```go
+type Positions struct{ mslices.Slice }
+
+func (p Positions) MarshalJSON() ([]byte, error)   { return mslices.MarshalJSON[Vec2](p.Slice) }
+func (p Positions) UnmarshalJSON(b []byte) error    { return mslices.UnmarshalJSON[Vec2](p.Slice, b) }
+```
+
+Now `Positions` works transparently with `json.Marshal`/`json.Unmarshal` and serializes as a standard JSON array.
+
 ## GC Safety: Pointer-Bearing Types
 
 Arena memory lives inside a `[]byte` buffer. **The Go garbage collector does not scan this buffer for pointers.** If you store a value with internal pointers (string, slice, map, chan, func, interface, or pointer fields) inside arena memory, the GC may collect the target, leaving a dangling reference.

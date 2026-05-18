@@ -1,6 +1,9 @@
 package mstrings
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"unsafe"
 
 	"github.com/gabstv/mmm"
@@ -177,6 +180,45 @@ func Equal(a, b String) bool {
 		}
 	}
 	return true
+}
+
+func (s *header) MarshalText() ([]byte, error) {
+	return Bytes(s), nil
+}
+
+func (s *header) UnmarshalText(text []byte) error {
+	if !SetBytes(s, text) {
+		return errors.New("mstrings: text exceeds String capacity")
+	}
+	return nil
+}
+
+func (s *header) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		s.len = 0
+		return nil
+	}
+	n := len(data)
+	if n < 2 || data[0] != '"' || data[n-1] != '"' {
+		return errors.New("mstrings: expected JSON string")
+	}
+	raw := data[1 : n-1]
+	// Fast path: no escape sequences — copy directly into arena
+	if bytes.IndexByte(raw, '\\') == -1 {
+		if !SetBytes(s, raw) {
+			return errors.New("mstrings: JSON string exceeds String capacity")
+		}
+		return nil
+	}
+	// Slow path: has escapes, decode via stdlib
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	if !Set(s, str) {
+		return errors.New("mstrings: JSON string exceeds String capacity")
+	}
+	return nil
 }
 
 // EqualString returns true if the String has identical content to a Go string.

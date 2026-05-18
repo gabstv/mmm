@@ -1,6 +1,8 @@
 package mslices
 
 import (
+	"encoding/json"
+	"errors"
 	"unsafe"
 
 	"github.com/gabstv/mmm"
@@ -185,6 +187,28 @@ func Truncate(s Slice, n int) {
 		panic("mslices: truncate out of range")
 	}
 	s.len = uint32(n)
+}
+
+// MarshalJSON serializes the slice as a JSON array, matching Go slice behavior.
+// Uses GoSlice for zero-copy access to the underlying arena data.
+func MarshalJSON[T any](s Slice) ([]byte, error) {
+	return json.Marshal(GoSlice[T](s))
+}
+
+// UnmarshalJSON deserializes a JSON array into the slice.
+// Returns an error if the array length exceeds the slice's capacity.
+func UnmarshalJSON[T any](s Slice, data []byte) error {
+	var elems []T
+	if err := json.Unmarshal(data, &elems); err != nil {
+		return err
+	}
+	if len(elems) > int(s.cap) {
+		return errors.New("mslices: JSON array exceeds Slice capacity")
+	}
+	dst := unsafe.Slice((*T)(unsafe.Add(unsafe.Pointer(s), uintptr(s.dataOffset))), len(elems))
+	copy(dst, elems)
+	s.len = uint32(len(elems))
+	return nil
 }
 
 // Free releases the slice's allocation from the allocator.

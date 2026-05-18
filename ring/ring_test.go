@@ -1,6 +1,7 @@
 package mring_test
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 
@@ -445,5 +446,117 @@ func TestPopPushCycle(t *testing.T) {
 	}
 	if !slices.Equal(values, []int{100, 101, 102, 103}) {
 		t.Fatalf("values = %v, want [100, 101, 102, 103]", values)
+	}
+}
+
+func TestMarshalJSON(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	r := mring.New[int32](arena, 4)
+	mring.Push[int32](r, 10)
+	mring.Push[int32](r, 20)
+	mring.Push[int32](r, 30)
+
+	got, err := mring.MarshalJSON[int32](r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goGot, _ := json.Marshal([]int32{10, 20, 30})
+	if string(got) != string(goGot) {
+		t.Fatalf("mring marshal %s != Go slice marshal %s", got, goGot)
+	}
+}
+
+func TestMarshalJSONWrapped(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	// Fill and overflow so head wraps around
+	r := mring.New[int](arena, 4)
+	for i := range 6 {
+		mring.Push[int](r, i)
+	}
+	// Ring should contain [2,3,4,5] in logical order
+	got, err := mring.MarshalJSON[int](r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goGot, _ := json.Marshal([]int{2, 3, 4, 5})
+	if string(got) != string(goGot) {
+		t.Fatalf("wrapped marshal %s != expected %s", got, goGot)
+	}
+}
+
+func TestUnmarshalJSON(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	r := mring.New[int32](arena, 8)
+	if err := mring.UnmarshalJSON[int32](r, []byte(`[1,2,3,4,5]`)); err != nil {
+		t.Fatal(err)
+	}
+	if mring.Len(r) != 5 {
+		t.Fatalf("Len = %d, want 5", mring.Len(r))
+	}
+	want := []int32{1, 2, 3, 4, 5}
+	for i, w := range want {
+		if *mring.Get[int32](r, i) != w {
+			t.Fatalf("elem[%d] = %d, want %d", i, *mring.Get[int32](r, i), w)
+		}
+	}
+}
+
+func TestUnmarshalJSONExceedsCapacity(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	r := mring.New[int32](arena, 2) // cap rounds to 2
+	err := mring.UnmarshalJSON[int32](r, []byte(`[1,2,3]`))
+	if err == nil {
+		t.Fatal("expected error for array exceeding capacity")
+	}
+}
+
+func TestJSONRoundTrip(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	r := mring.New[int](arena, 8)
+	// Push with wrap-around
+	for i := range 10 {
+		mring.Push[int](r, i*10)
+	}
+
+	data, err := mring.MarshalJSON[int](r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r2 := mring.New[int](arena, 8)
+	if err := mring.UnmarshalJSON[int](r2, data); err != nil {
+		t.Fatal(err)
+	}
+	if mring.Len(r2) != mring.Len(r) {
+		t.Fatalf("round trip len = %d, want %d", mring.Len(r2), mring.Len(r))
+	}
+	for i := range mring.Len(r) {
+		if *mring.Get[int](r2, i) != *mring.Get[int](r, i) {
+			t.Fatalf("round trip elem[%d] = %d, want %d", i, *mring.Get[int](r2, i), *mring.Get[int](r, i))
+		}
+	}
+}
+
+func TestMarshalJSONEmpty(t *testing.T) {
+	arena := mmm.NewArena(4096)
+	defer mmm.DestroyArena(&arena)
+
+	r := mring.New[int32](arena, 4)
+	got, err := mring.MarshalJSON[int32](r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "[]" {
+		t.Fatalf("empty marshal = %s, want []", got)
 	}
 }
