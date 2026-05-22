@@ -110,6 +110,40 @@ for i := range 6 {
 // r contains [2, 3, 4, 5]
 ```
 
+### Timestamps (`mtime`)
+
+Arena-allocated timestamps with microsecond precision and timezone preservation. The `Timestamp` value type is 16 bytes with zero GC pointers — safe to store directly in `mslices.Slice[Timestamp]` or `mring.Ring[Timestamp]` without pinning.
+
+```go
+import mtime "github.com/gabstv/mmm/time"
+
+arena := mmm.NewArena(4096)
+defer mmm.DestroyArena(&arena)
+
+// Arena-allocated (Time = *Timestamp)
+mt := mtime.From(arena, time.Now())
+fmt.Println(mt.GoTime()) // reconstructs full time.Time with timezone
+
+// Value type (no arena needed)
+ts := mtime.NewTimestamp(time.Now())
+fmt.Println(ts.Unix())
+```
+
+Timestamps implement `json.Marshaler` and `json.Unmarshaler`. The default format is RFC 3339 (matching `time.Time`), with a global switch for Unix micro/milliseconds:
+
+```go
+data, _ := json.Marshal(mt)              // "2025-06-15T10:30:00.123456Z"
+
+mtime.SetJSONFormat(mtime.FormatUnixMicro)
+data, _ = json.Marshal(mt)               // 1750070400123456
+
+// UnmarshalJSON always accepts RFC 3339 strings; for numeric values it
+// uses the current format setting (or auto-detects for post-2001 dates)
+json.Unmarshal(data, mt)
+```
+
+Timezone identity is preserved through a package-level registry. Round-tripping through `GoTime()` returns a `time.Time` with the original IANA zone (including DST rules), not just a fixed UTC offset.
+
 ### JSON for Slices and Ring Buffers
 
 Slices and ring buffers are generic types, so they can't implement `json.Marshaler` directly (the header erases the type parameter). Instead, the packages provide generic helper functions:
