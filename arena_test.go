@@ -222,8 +222,9 @@ func BenchmarkArenaAlloc128KB(b *testing.B) {
 	var heapbuf [1024 * 1024 * 16]byte // 16MB
 
 	arena := NewArenaFrom(heapbuf[:])
-
-	for i := 0; i < b.N; i++ {
+	var sink byte
+	b.ResetTimer()
+	for b.Loop() {
 	realloc:
 		x, err := TryAlloc[[65536 * 2]byte](arena) // 128KB
 
@@ -233,15 +234,18 @@ func BenchmarkArenaAlloc128KB(b *testing.B) {
 			goto realloc
 		}
 
-		x[0] = byte(i) // truncated to 0-255
+		sink = x[0]
 	}
+	_ = sink
 }
 
 func BenchmarkNoArenaAlloc128KB(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	var sink byte
+	for b.Loop() {
 		x := make([]byte, 65536*2) // 128KB - large enough to escape to the heap
 		// 128KB is defined as the max stack var size in https://github.com/golang/go/blob/master/src/cmd/compile/internal/gc/main.go#L132
 
-		x[0] = byte(i) // truncated to 0-255
+		sink = x[0]
 	}
+	_ = sink
 }

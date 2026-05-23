@@ -174,12 +174,7 @@ func Equal(a, b String) bool {
 	}
 	ab := unsafe.Slice((*byte)(dataPtr(a)), a.len)
 	bb := unsafe.Slice((*byte)(dataPtr(b)), b.len)
-	for i := range ab {
-		if ab[i] != bb[i] {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(ab, bb)
 }
 
 func (s *header) MarshalText() ([]byte, error) {
@@ -227,10 +222,5 @@ func EqualString(s String, gs string) bool {
 		return false
 	}
 	sb := unsafe.Slice((*byte)(dataPtr(s)), s.len)
-	for i := range sb {
-		if sb[i] != gs[i] {
-			return false
-		}
-	}
-	return true
+	return string(sb) == gs
 }

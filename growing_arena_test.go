@@ -70,11 +70,11 @@ func TestGrowingArena_OldPointersStableAcrossGrowth(t *testing.T) {
 	*first = 0xDEADBEEF
 
 	// Fill the rest of chunk 0 and push into several more chunks.
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		p := Alloc[int64](arena)
 		*p = int64(i)
 	}
-	for i := 0; i < 3*8; i++ {
+	for i := range 3 * 8 {
 		p := Alloc[int64](arena)
 		*p = int64(i)
 	}
@@ -160,7 +160,7 @@ func TestGrowingArena_ResetCollapsesWhenGrew(t *testing.T) {
 	defer DestroyGrowingArena(&arena)
 
 	// Grow to at least 3 chunks (24 × int64 = 192 bytes > 2×64).
-	for i := 0; i < 24; i++ {
+	for i := range 24 {
 		p := Alloc[int64](arena)
 		*p = int64(i)
 	}
@@ -188,7 +188,7 @@ func TestGrowingArena_ResetCollapseSizesToHighWaterMark(t *testing.T) {
 	defer DestroyGrowingArena(&arena)
 
 	// Allocate ~200+ bytes across chunks (chunkSize=64, so 3+ chunks).
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		p := Alloc[int64](arena)
 		*p = 0
 	}
@@ -213,7 +213,7 @@ func TestGrowingArena_WithMaxCollapseSize(t *testing.T) {
 	defer DestroyGrowingArena(&arena)
 
 	// Drive high-water mark well above 128 bytes.
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		p := Alloc[int64](arena)
 		*p = 0
 	}
@@ -237,7 +237,7 @@ func TestGrowingArena_PinsClearedOnReset(t *testing.T) {
 	arena := NewGrowingArena(256)
 	defer DestroyGrowingArena(&arena)
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		Pin(arena, "value")
 	}
 	_, h1 := PinManaged(arena, "managed1")

@@ -107,7 +107,7 @@ func TestGPAAllocs(t *testing.T) {
 		tempArena := gpa.NewArena(1024 * 8)
 		defer DestroyArena(&tempArena)
 
-		for i := 0; i < 1024; i++ {
+		for i := range 1024 {
 			temp4 := Alloc[float64](tempArena)
 			*temp4 = float64(i)
 		}
@@ -339,7 +339,7 @@ func TestGPAInterleavedAllocFree(t *testing.T) {
 	gpa := NewGeneralPurposeAllocator(512)
 
 	ptrs := make([]*int64, 0, 20)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		p := Alloc[int64](gpa)
 		*p = int64(i)
 		ptrs = append(ptrs, p)
@@ -358,7 +358,7 @@ func TestGPAInterleavedAllocFree(t *testing.T) {
 
 	// Alloc 5 more — should reuse freed slots
 	sizeBefore := gpa.Size()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		p := Alloc[int64](gpa)
 		*p = int64(100 + i)
 		ptrs = append(ptrs, p)

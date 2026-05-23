@@ -1,8 +1,8 @@
 package mmm
 
 import (
+	"cmp"
 	"slices"
-	"sort"
 	"unsafe"
 )
 
@@ -165,8 +165,8 @@ func (b *gpabucket) free(ptr unsafe.Pointer) (bucketEmptied bool) {
 // adjacent regions.
 func (b *gpabucket) insertFreeRegion(r region) {
 	// Binary search for the insertion point
-	idx := sort.Search(len(b.freeRegions), func(i int) bool {
-		return b.freeRegions[i].pos >= r.pos
+	idx, _ := slices.BinarySearchFunc(b.freeRegions, r, func(x, y region) int {
+		return cmp.Compare(x.pos, y.pos)
 	})
 
 	b.freeRegions = slices.Insert(b.freeRegions, idx, r)
@@ -281,16 +281,16 @@ func (a *generalPurposeAllocator) makeBucket(minsize int) *gpabucket {
 
 func (a *generalPurposeAllocator) Count() int {
 	total := 0
-	for i := range a.buckets {
-		total += a.buckets[i].allocations
+	for _, b := range a.buckets {
+		total += b.allocations
 	}
 	return total
 }
 
 func (a *generalPurposeAllocator) Size() int64 {
 	var total int64
-	for i := range a.buckets {
-		total += int64(len(a.buckets[i].buf))
+	for _, b := range a.buckets {
+		total += int64(len(b.buf))
 	}
 
 	return total
