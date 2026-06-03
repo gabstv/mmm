@@ -19,6 +19,9 @@ import (
 // the type parameter on every call.
 //
 // For value types without pointers, no GC pinning is needed.
+//
+// Length, capacity, element size, and data offset are stored as uint32,
+// limiting a single Slice to ~4 billion elements and ~4 GB of data.
 type Slice = *header
 
 type header struct {
@@ -87,6 +90,41 @@ func New[T any](a mmm.Allocator, cap int) Slice {
 	s.elemSize = uint32(es)
 	s.dataOffset = uint32(do)
 	return s
+}
+
+// NewAligned allocates a Slice whose capacity is rounded up via AlignedCap so
+// the total allocation (header + padding + cap*sizeof(T)) is a multiple of the
+// required alignment, eliminating padding waste in the allocator. Length is 0.
+// Returns nil if the allocator cannot satisfy the request.
+func NewAligned[T any](a mmm.Allocator, cap int) Slice {
+	return New[T](a, AlignedCap[T](cap))
+}
+
+// Grow returns a Slice with capacity >= newCap, preserving the existing length
+// and elements. If newCap <= the current capacity, s is returned unchanged.
+//
+// Growth uses mmm.RawRealloc, so the existing block grows in place when it is
+// the allocator's tail allocation; otherwise a new block is allocated, the
+// contents are copied, and the old block is freed (reclaimed, not orphaned).
+// In either case s must not be used after a successful Grow — use the returned
+// Slice. Returns nil if the allocator cannot satisfy the request (the original
+// allocation is left intact in that case), consistent with New.
+func Grow[T any](a mmm.Allocator, s Slice, newCap int) Slice {
+	if newCap <= int(s.cap) {
+		return s
+	}
+	es := int(s.elemSize)
+	do := int(s.dataOffset)
+	oldTotal := do + int(s.cap)*es
+	newTotal := do + newCap*es
+	ptr := mmm.RawRealloc(a, unsafe.Pointer(s), oldTotal, newTotal, allocAlign[T]())
+	if ptr == nil {
+		return nil
+	}
+	ns := (Slice)(ptr)
+	// len, elemSize and dataOffset are preserved by the copy; only cap changes.
+	ns.cap = uint32(newCap)
+	return ns
 }
 
 // From allocates a Slice and copies the elements from a Go slice.

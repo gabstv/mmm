@@ -237,6 +237,34 @@ func (a *generalPurposeAllocator) free(ptr unsafe.Pointer) error {
 	return ErrNotFound
 }
 
+// growInPlace extends the tail allocation of whichever bucket owns ptr. An
+// allocation is the tail of its bucket iff it ends exactly at that bucket's
+// cursor and the bucket buffer has room for the extra bytes. Allocations served
+// from the free list (i.e. not at the cursor) cannot grow in place.
+func (a *generalPurposeAllocator) growInPlace(ptr unsafe.Pointer, oldSize, newSize, align int) bool {
+	for i := range a.buckets {
+		b := &a.buckets[i]
+		if !b.hasPtr(ptr) {
+			continue
+		}
+		offset := int(uintptr(ptr) - uintptr(unsafe.Pointer(&b.buf[0])))
+		if offset+oldSize != b.cursor {
+			return false
+		}
+		end := offset + newSize
+		if end > len(b.buf) {
+			return false
+		}
+		clear(b.buf[b.cursor:end])
+		b.cursor = end
+		if b.allocSizes != nil {
+			b.allocSizes[offset] = newSize
+		}
+		return true
+	}
+	return false
+}
+
 func (a *generalPurposeAllocator) pin(value any) {
 	a.refs = append(a.refs, value)
 }

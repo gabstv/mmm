@@ -58,6 +58,28 @@ func (a *arenaAllocator) free(ptr unsafe.Pointer) error {
 	return nil
 }
 
+// growInPlace extends the tail allocation. An allocation is the tail iff it
+// ends exactly at the cursor; growth then only needs the extra bytes to fit
+// before the end of the buffer.
+func (a *arenaAllocator) growInPlace(ptr unsafe.Pointer, oldSize, newSize, align int) bool {
+	if len(a.buf) == 0 {
+		return false
+	}
+	// Stray pointers before buf[0] wrap to a large positive value on
+	// unsigned arithmetic, caught by the >= len check.
+	offset := int(uintptr(ptr) - uintptr(unsafe.Pointer(&a.buf[0])))
+	if offset >= len(a.buf) || offset+oldSize != a.cursor {
+		return false
+	}
+	end := offset + newSize
+	if end > len(a.buf) {
+		return false
+	}
+	clear(a.buf[a.cursor:end])
+	a.cursor = end
+	return true
+}
+
 func (a *arenaAllocator) pin(value any) {
 	if a.parent != nil {
 		a.parent.pin(value)

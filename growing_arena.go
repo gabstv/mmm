@@ -136,6 +136,31 @@ func (a *growingArena) free(ptr unsafe.Pointer) error {
 	return nil
 }
 
+// growInPlace extends the tail allocation of the active chunk. An allocation
+// is the tail iff it ends exactly at the active chunk's cursor; growth then
+// only needs the extra bytes to fit before the end of that chunk. Older chunks
+// are never reallocated, so allocations not in the active chunk cannot grow in
+// place.
+func (a *growingArena) growInPlace(ptr unsafe.Pointer, oldSize, newSize, align int) bool {
+	ac := a.active()
+	if len(ac.buf) == 0 {
+		return false
+	}
+	// Stray pointers before buf[0] wrap to a large positive value on
+	// unsigned arithmetic, caught by the >= len check.
+	offset := int(uintptr(ptr) - uintptr(unsafe.Pointer(&ac.buf[0])))
+	if offset >= len(ac.buf) || offset+oldSize != ac.cursor {
+		return false
+	}
+	end := offset + newSize
+	if end > len(ac.buf) {
+		return false
+	}
+	clear(ac.buf[ac.cursor:end])
+	ac.cursor = end
+	return true
+}
+
 func (a *growingArena) pin(value any) {
 	a.refs = append(a.refs, value)
 }
