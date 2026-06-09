@@ -52,11 +52,19 @@ type growingArena struct {
 	managed         map[int]any
 	nextPinID       int
 	onReset         []func()
+	parent          Allocator
 }
 
 // active returns a pointer to the current chunk receiving new allocations.
 func (a *growingArena) active() *chunk {
 	return &a.chunks[len(a.chunks)-1]
+}
+
+func (a *growingArena) newChunkBuf(size int64) []byte {
+	if a.parent != nil {
+		return unsafe.Slice((*byte)(a.parent.alloc(int(size), 8)), size)
+	}
+	return make([]byte, size)
 }
 
 // NewGrowingArena returns a new growing arena with an initial chunk of
@@ -111,10 +119,10 @@ func (a *growingArena) alloc(size, align int) unsafe.Pointer {
 	if int64(size) > a.chunkSize {
 		// Oversized request: one-off chunk rounded up to 8-byte boundary.
 		rounded := int64((size + 7) &^ 7)
-		newBuf = make([]byte, rounded)
+		newBuf = a.newChunkBuf(rounded)
 		a.totalBytes += rounded
 	} else {
-		newBuf = make([]byte, a.chunkSize)
+		newBuf = a.newChunkBuf(a.chunkSize)
 		a.totalBytes += a.chunkSize
 	}
 
@@ -163,10 +171,17 @@ func (a *growingArena) growInPlace(ptr unsafe.Pointer, oldSize, newSize, align i
 }
 
 func (a *growingArena) pin(value any) {
+	if a.parent != nil {
+		a.parent.pin(value)
+		return
+	}
 	a.refs = append(a.refs, value)
 }
 
 func (a *growingArena) pinManaged(value any) int {
+	if a.parent != nil {
+		return a.parent.pinManaged(value)
+	}
 	id := a.nextPinID
 	a.nextPinID++
 	if a.managed == nil {
@@ -177,6 +192,10 @@ func (a *growingArena) pinManaged(value any) int {
 }
 
 func (a *growingArena) unpin(id int) {
+	if a.parent != nil {
+		a.parent.unpin(id)
+		return
+	}
 	delete(a.managed, id)
 }
 
@@ -195,8 +214,10 @@ func (a *growingArena) Reset() {
 	a.runOnReset()
 	if len(a.chunks) == 1 {
 		a.chunks[0].cursor = 0
-		a.refs = a.refs[:0]
-		clear(a.managed)
+		if a.parent == nil {
+			a.refs = a.refs[:0]
+			clear(a.managed)
+		}
 		return
 	}
 
@@ -208,12 +229,20 @@ func (a *growingArena) Reset() {
 		target = a.chunkSize
 	}
 
-	a.chunks = []chunk{{buf: make([]byte, target)}}
+	if a.parent != nil {
+		for i := range a.chunks {
+			a.parent.free(unsafe.Pointer(&a.chunks[i].buf[0]))
+		}
+	}
+
+	a.chunks = []chunk{{buf: a.newChunkBuf(target)}}
 	a.totalBytes = target
 	a.highWaterMark = target
 
-	a.refs = a.refs[:0]
-	clear(a.managed)
+	if a.parent == nil {
+		a.refs = a.refs[:0]
+		clear(a.managed)
+	}
 }
 
 func (a *growingArena) OnReset(fn func()) {
@@ -231,12 +260,16 @@ func (a *growingArena) destroy() {
 	a.runOnReset()
 	for i := range a.chunks {
 		clear(a.chunks[i].buf)
+		if a.parent != nil {
+			a.parent.free(unsafe.Pointer(&a.chunks[i].buf[0]))
+		}
 		a.chunks[i].buf = nil
 	}
 	a.chunks = nil
 	a.refs = nil
 	a.managed = nil
 	a.onReset = nil
+	a.parent = nil
 }
 
 func (a *growingArena) ChunkCount() int {

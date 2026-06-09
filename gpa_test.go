@@ -433,8 +433,8 @@ func TestCustomGPAMallocFree(t *testing.T) {
 	mallocfn := func(size int) unsafe.Pointer {
 		buf := make([]byte, size)
 		ptr := unsafe.Pointer(&buf[0])
-		runtime.KeepAlive(buf)
 		allocated = append(allocated, ptr)
+		runtime.KeepAlive(buf)
 		return ptr
 	}
 
@@ -490,6 +490,90 @@ func TestCustomGPADestroy(t *testing.T) {
 	if freeCount != 2 {
 		t.Fatalf("expected 2 free calls from Destroy, got %d", freeCount)
 	}
+}
+
+func TestGPANewGrowingArena(t *testing.T) {
+	gpa := NewGeneralPurposeAllocator(4096)
+
+	ga := gpa.NewGrowingArena(256)
+
+	// Allocate values in the growing arena — backed by GPA memory.
+	p := Alloc[int64](ga)
+	*p = 123
+	q := Alloc[int32](ga)
+	*q = 456
+
+	if *p != 123 || *q != 456 {
+		t.Fatalf("unexpected values: p=%d q=%d", *p, *q)
+	}
+
+	// GPA should have one allocation (the 256-byte initial chunk).
+	if gpa.Count() != 1 {
+		t.Fatalf("expected GPA count 1 (initial chunk), got %d", gpa.Count())
+	}
+
+	DestroyGrowingArena(&ga)
+
+	if gpa.Count() != 0 {
+		t.Fatalf("expected GPA count 0 after destroy, got %d", gpa.Count())
+	}
+}
+
+func TestGPANewGrowingArenaGrowth(t *testing.T) {
+	gpa := NewGeneralPurposeAllocator(4096)
+
+	ga := gpa.NewGrowingArena(64)
+
+	if ga.ChunkCount() != 1 {
+		t.Fatalf("expected 1 chunk, got %d", ga.ChunkCount())
+	}
+
+	// Allocate more than one chunk's worth to trigger growth.
+	for range 10 {
+		p := Alloc[[16]byte](ga)
+		p[0] = 0xFF
+	}
+
+	if ga.ChunkCount() < 2 {
+		t.Fatalf("expected growth, got %d chunks", ga.ChunkCount())
+	}
+
+	// All chunk allocations come from the GPA.
+	if gpa.Count() < 2 {
+		t.Fatalf("expected GPA count >= 2 (multiple chunks), got %d", gpa.Count())
+	}
+
+	// Reset collapses into a single chunk — old chunks freed, new one allocated.
+	ga.Reset()
+
+	if ga.ChunkCount() != 1 {
+		t.Fatalf("expected 1 chunk after reset, got %d", ga.ChunkCount())
+	}
+	if gpa.Count() != 1 {
+		t.Fatalf("expected GPA count 1 after reset collapse, got %d", gpa.Count())
+	}
+
+	DestroyGrowingArena(&ga)
+
+	if gpa.Count() != 0 {
+		t.Fatalf("expected GPA count 0 after destroy, got %d", gpa.Count())
+	}
+}
+
+func TestGPANewGrowingArenaPinDelegation(t *testing.T) {
+	gpa := NewGeneralPurposeAllocator(4096)
+
+	ga := gpa.NewGrowingArena(256)
+
+	s := "hello from growing arena"
+	Pin(ga, s)
+
+	// Pin went to the GPA, not the growing arena's local refs.
+	// Destroy the growing arena — the pin survives on the GPA.
+	DestroyGrowingArena(&ga)
+
+	// Pin still alive on GPA; destroy GPA to clean up.
+	gpa.Destroy()
 }
 
 func TestGoBackedGPADestroy(t *testing.T) {

@@ -20,6 +20,7 @@ type GeneralPurposeAllocator interface {
 	Count() int
 	free(ptr unsafe.Pointer) error
 	NewArena(size int) Arena
+	NewGrowingArena(chunkSize int64, opts ...GrowingArenaOption) GrowingArena
 	Destroy()
 }
 
@@ -55,8 +56,6 @@ func (b *gpabucket) canAlloc(size, align int) bool {
 	// Check free list for a fitting region
 	for _, r := range b.freeRegions {
 		padding := (align - r.pos%align) % align
-		alignedStart := r.pos + padding
-		_ = alignedStart
 		if padding+size <= r.size {
 			return true
 		}
@@ -358,6 +357,20 @@ func (a *generalPurposeAllocator) NewArena(size int) Arena {
 	return arena
 }
 
+func (a *generalPurposeAllocator) NewGrowingArena(chunkSize int64, opts ...GrowingArenaOption) GrowingArena {
+	ga := &growingArena{
+		chunkSize: chunkSize,
+		parent:    a,
+	}
+	for _, o := range opts {
+		o(ga)
+	}
+	ga.chunks = []chunk{{buf: ga.newChunkBuf(chunkSize)}}
+	ga.totalBytes = chunkSize
+	ga.highWaterMark = chunkSize
+	return ga
+}
+
 func (a *generalPurposeAllocator) Destroy() {
 	if a.freefn != nil {
 		for i := range a.buckets {
@@ -382,6 +395,9 @@ func NewGeneralPurposeAllocator(bucketSize int) GeneralPurposeAllocator {
 // and freefn for bucket allocation instead of Go's make. The caller must
 // call Destroy when the GPA is no longer needed to release C memory.
 func NewCustomGeneralPurposeAllocator(bucketSize int, mallocfn func(size int) unsafe.Pointer, freefn func(ptr unsafe.Pointer, size int)) GeneralPurposeAllocator {
+	if (mallocfn == nil) != (freefn == nil) {
+		panic("mmm: mallocfn and freefn must both be provided or both be nil")
+	}
 	return &generalPurposeAllocator{
 		bucketSize: bucketSize,
 		mallocfn:   mallocfn,
