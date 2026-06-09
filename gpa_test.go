@@ -426,3 +426,84 @@ func TestGPANewArenaWithFreeList(t *testing.T) {
 		t.Fatalf("expected size 0 after all frees, got %d", gpa.Size())
 	}
 }
+
+func TestCustomGPAMallocFree(t *testing.T) {
+	var allocated []unsafe.Pointer
+
+	mallocfn := func(size int) unsafe.Pointer {
+		buf := make([]byte, size)
+		ptr := unsafe.Pointer(&buf[0])
+		runtime.KeepAlive(buf)
+		allocated = append(allocated, ptr)
+		return ptr
+	}
+
+	var freed []unsafe.Pointer
+	freefn := func(ptr unsafe.Pointer, size int) {
+		freed = append(freed, ptr)
+	}
+
+	gpa := NewCustomGeneralPurposeAllocator(128, mallocfn, freefn)
+
+	x := Alloc[int](gpa)
+	*x = 42
+
+	if len(allocated) != 1 {
+		t.Fatalf("expected 1 malloc call, got %d", len(allocated))
+	}
+
+	Free(gpa, &x)
+
+	if len(freed) != 1 {
+		t.Fatalf("expected 1 free call after bucket emptied, got %d", len(freed))
+	}
+	if freed[0] != allocated[0] {
+		t.Fatal("freed pointer does not match allocated pointer")
+	}
+}
+
+func TestCustomGPADestroy(t *testing.T) {
+	var allocCount, freeCount int
+
+	mallocfn := func(size int) unsafe.Pointer {
+		allocCount++
+		buf := make([]byte, size)
+		ptr := unsafe.Pointer(&buf[0])
+		runtime.KeepAlive(buf)
+		return ptr
+	}
+	freefn := func(ptr unsafe.Pointer, size int) {
+		freeCount++
+	}
+
+	gpa := NewCustomGeneralPurposeAllocator(64, mallocfn, freefn)
+
+	_ = Alloc[int](gpa)
+	_ = Alloc[[128]byte](gpa)
+
+	if allocCount != 2 {
+		t.Fatalf("expected 2 malloc calls, got %d", allocCount)
+	}
+
+	gpa.Destroy()
+
+	if freeCount != 2 {
+		t.Fatalf("expected 2 free calls from Destroy, got %d", freeCount)
+	}
+}
+
+func TestGoBackedGPADestroy(t *testing.T) {
+	gpa := NewGeneralPurposeAllocator(128)
+
+	_ = Alloc[int](gpa)
+	_ = Alloc[int](gpa)
+
+	gpa.Destroy()
+
+	if gpa.Count() != 0 {
+		t.Fatalf("expected count 0 after Destroy, got %d", gpa.Count())
+	}
+	if gpa.Size() != 0 {
+		t.Fatalf("expected size 0 after Destroy, got %d", gpa.Size())
+	}
+}

@@ -20,6 +20,7 @@ type GeneralPurposeAllocator interface {
 	Count() int
 	free(ptr unsafe.Pointer) error
 	NewArena(size int) Arena
+	Destroy()
 }
 
 type generalPurposeAllocator struct {
@@ -28,6 +29,8 @@ type generalPurposeAllocator struct {
 	refs       []any
 	managed    map[int]any
 	nextPinID  int
+	mallocfn   func(size int) unsafe.Pointer
+	freefn     func(ptr unsafe.Pointer, size int)
 }
 
 type gpabucket struct {
@@ -229,6 +232,9 @@ func (a *generalPurposeAllocator) free(ptr unsafe.Pointer) error {
 		}
 
 		if a.buckets[i].free(ptr) {
+			if a.freefn != nil {
+				a.freefn(unsafe.Pointer(&a.buckets[i].buf[0]), len(a.buckets[i].buf))
+			}
 			a.buckets = append(a.buckets[:i], a.buckets[i+1:]...)
 		}
 		return nil
@@ -298,8 +304,17 @@ func (a *generalPurposeAllocator) makeBucket(minsize int) *gpabucket {
 	if minsize > size {
 		size = (minsize + 7) &^ 7
 	}
+
+	var buf []byte
+	if a.mallocfn != nil {
+		ptr := a.mallocfn(size)
+		buf = unsafe.Slice((*byte)(ptr), size)
+	} else {
+		buf = make([]byte, size)
+	}
+
 	b := gpabucket{
-		buf: make([]byte, size),
+		buf: buf,
 	}
 
 	a.buckets = append(a.buckets, b)
@@ -343,11 +358,33 @@ func (a *generalPurposeAllocator) NewArena(size int) Arena {
 	return arena
 }
 
+func (a *generalPurposeAllocator) Destroy() {
+	if a.freefn != nil {
+		for i := range a.buckets {
+			a.freefn(unsafe.Pointer(&a.buckets[i].buf[0]), len(a.buckets[i].buf))
+		}
+	}
+	a.buckets = nil
+	a.refs = nil
+	a.managed = nil
+}
+
 // NewGeneralPurposeAllocator returns a new GPA with the given default
 // bucket size. Buckets larger than bucketSize are created automatically
 // when an allocation exceeds the default.
 func NewGeneralPurposeAllocator(bucketSize int) GeneralPurposeAllocator {
 	return &generalPurposeAllocator{
 		bucketSize: bucketSize,
+	}
+}
+
+// NewCustomGeneralPurposeAllocator returns a new GPA that uses mallocfn
+// and freefn for bucket allocation instead of Go's make. The caller must
+// call Destroy when the GPA is no longer needed to release C memory.
+func NewCustomGeneralPurposeAllocator(bucketSize int, mallocfn func(size int) unsafe.Pointer, freefn func(ptr unsafe.Pointer, size int)) GeneralPurposeAllocator {
+	return &generalPurposeAllocator{
+		bucketSize: bucketSize,
+		mallocfn:   mallocfn,
+		freefn:     freefn,
 	}
 }
