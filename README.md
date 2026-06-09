@@ -61,6 +61,51 @@ for i := 0; i < 100; i++ {
 }
 ```
 
+### Custom GPA with CGo-backed memory
+
+For CGo-heavy applications, you can create a GPA whose bucket memory is allocated by C, avoiding copies when passing data to C functions:
+
+```go
+/*
+#include <stdlib.h>
+#include <string.h>
+*/
+import "C"
+
+import "unsafe"
+
+func main() {
+    gpa := mmm.NewCustomGeneralPurposeAllocator(
+        4096,
+        func(size int) unsafe.Pointer {
+            return C.malloc(C.size_t(size))
+        },
+        func(ptr unsafe.Pointer, size int) {
+            C.free(ptr)
+        },
+    )
+    defer gpa.Destroy()
+
+    // Allocations live in C memory — pass directly to C functions
+    data := mmm.Alloc[[512]byte](gpa)
+    C.memset(unsafe.Pointer(data), 0xFF, 512)
+
+    mmm.Free(gpa, &data)
+}
+```
+
+Sub-arenas created from a custom GPA inherit the C allocator:
+
+```go
+arena := gpa.NewArena(8192)
+defer mmm.DestroyArena(&arena)
+
+// These bump allocations also live in C memory
+p := mmm.Alloc[MyVertex](arena)
+```
+
+> **Note:** You must call `Destroy()` when the GPA is no longer needed. Go's GC will not free C-allocated memory. For Go-backed GPAs, `Destroy()` is optional but recommended — it nils internal state so post-destroy use panics immediately.
+
 ## Arena-Allocated Data Types
 
 ### Strings (`mstrings`)
