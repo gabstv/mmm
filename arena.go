@@ -23,6 +23,11 @@ type Arena interface {
 	// use PinManaged + Unpin for those.
 	Reset()
 
+	// OnReset registers a callback that fires on every Reset() and
+	// DestroyArena() call, before the arena memory is reclaimed. Use this
+	// to run destructors for resources whose lifetime is tied to the arena.
+	OnReset(fn func())
+
 	destroy()
 }
 
@@ -33,6 +38,7 @@ type arenaAllocator struct {
 	refs      []any
 	managed   map[int]any
 	nextPinID int
+	onReset   []func()
 }
 
 // align is always a power of 2 (guaranteed by unsafe.Alignof), so the
@@ -110,20 +116,34 @@ func (a *arenaAllocator) unpin(id int) {
 }
 
 func (a *arenaAllocator) destroy() {
+	a.runOnReset()
 	clear(a.buf)
 	a.buf = nil
 	a.cursor = 0
 	a.refs = nil
 	a.managed = nil
 	a.parent = nil
+	a.onReset = nil
 }
 
 func (a *arenaAllocator) Reset() {
+	a.runOnReset()
 	a.cursor = 0
 	if a.parent == nil {
 		a.refs = a.refs[:0]
 		clear(a.managed)
 	}
+}
+
+func (a *arenaAllocator) OnReset(fn func()) {
+	a.onReset = append(a.onReset, fn)
+}
+
+func (a *arenaAllocator) runOnReset() {
+	for _, fn := range a.onReset {
+		fn()
+	}
+	a.onReset = a.onReset[:0]
 }
 
 // NewArena returns a new arena allocator with a buffer of the given size.

@@ -51,6 +51,7 @@ type growingArena struct {
 	refs            []any
 	managed         map[int]any
 	nextPinID       int
+	onReset         []func()
 }
 
 // active returns a pointer to the current chunk receiving new allocations.
@@ -191,15 +192,14 @@ func (a *growingArena) unpin(id int) {
 // All pointers obtained from the arena before Reset are invalidated.
 // Dereferencing them leads to undefined behavior. All bulk pins are released.
 func (a *growingArena) Reset() {
+	a.runOnReset()
 	if len(a.chunks) == 1 {
-		// Never grew — rewind cursor only, keep the existing buffer.
 		a.chunks[0].cursor = 0
 		a.refs = a.refs[:0]
 		clear(a.managed)
 		return
 	}
 
-	// Grew — collapse all chunks into one.
 	target := a.highWaterMark
 	if a.maxCollapseSize > 0 && target > a.maxCollapseSize {
 		target = a.maxCollapseSize
@@ -208,7 +208,6 @@ func (a *growingArena) Reset() {
 		target = a.chunkSize
 	}
 
-	// Drop old chunks (let GC reclaim them) and install a fresh single chunk.
 	a.chunks = []chunk{{buf: make([]byte, target)}}
 	a.totalBytes = target
 	a.highWaterMark = target
@@ -217,7 +216,19 @@ func (a *growingArena) Reset() {
 	clear(a.managed)
 }
 
+func (a *growingArena) OnReset(fn func()) {
+	a.onReset = append(a.onReset, fn)
+}
+
+func (a *growingArena) runOnReset() {
+	for _, fn := range a.onReset {
+		fn()
+	}
+	a.onReset = a.onReset[:0]
+}
+
 func (a *growingArena) destroy() {
+	a.runOnReset()
 	for i := range a.chunks {
 		clear(a.chunks[i].buf)
 		a.chunks[i].buf = nil
@@ -225,6 +236,7 @@ func (a *growingArena) destroy() {
 	a.chunks = nil
 	a.refs = nil
 	a.managed = nil
+	a.onReset = nil
 }
 
 func (a *growingArena) ChunkCount() int {
